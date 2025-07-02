@@ -4,6 +4,7 @@ from datetime import datetime
 import time
 import os
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def get_language_info():
     """
@@ -41,9 +42,9 @@ def generate_fact_id(fact_text):
     # Create a hash of the fact text for consistent + unique IDs
     return hashlib.md5(fact_text.encode('utf-8')).hexdigest()[:18]
 
-def collect_all_facts(lang_code, lang_info, date_added):
+def get_all_facts(lang_code, lang_info, date_added):
     """
-    Fetch all facts for a language using the count parameter
+    Fetch all facts for one language using the count param
     """
     try:
         fact_count = lang_info.get('fact_count', 1000)  # Default to 1000 facts if no fact_count
@@ -71,25 +72,36 @@ def collect_all_facts(lang_code, lang_info, date_added):
                         'word_count': len(cleaned_text.split()),
                         'character_count': len(cleaned_text)
                     })
-        
+        print(f"Collected {fact_count} {lang_info['language']} Facts")
         return facts
         
     except Exception as e:
         print(f"Error fetching facts for {lang_code}: {e}")
         return []
     
-def collect_language_facts(lang_code, lang_info, date_added):
+def get_all_languages(languages, date_added):
     """
-    Collect all facts at once for a given language using count param
+    Submit concurrent API requests for each language found in /options endpoint
     """
-    lang_name = lang_info['language']
-    expected_count = lang_info.get('fact_count')
-    
-    # Collect all facts in one request
-    all_data = collect_all_facts(lang_code, lang_info, date_added)
-    
-    print(f"Collected {len(all_data)} {lang_name}  facts")
-    return all_data
+    results = []
+
+    # Submit API requests concurrently and collect results as they complete
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        pending_requests = {
+            executor.submit(get_all_facts, lang_code, lang_info, date_added): lang_code
+            for lang_code, lang_info in languages.items()
+        }
+
+        for request in as_completed(pending_requests):
+            lang_code = pending_requests[request]
+            try:
+                data = request.result()
+                results.extend(data)
+            except Exception as e:
+                print(f"Error in request for {lang_code}: {e}")
+
+    return results
+
 
 def main():
     """
@@ -106,9 +118,7 @@ def main():
     all_data = []
     
     # Collect data for each language
-    for lang_code, lang_info in languages.items():
-        language_facts = collect_language_facts(lang_code, lang_info, date_added)
-        all_data.extend(language_facts)
+    all_data = get_all_languages(languages, date_added)
     
     # Set output directory 
     output_dir = "daily_meowfact_data"
@@ -119,7 +129,6 @@ def main():
     filename = os.path.join(output_dir, f"meowfacts_data_{timestamp}.json")
     
     # Save output to file
-    print(f"Saving {len(all_data)} facts to {filename}...")
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(all_data, f, indent=2, ensure_ascii=False)
     
